@@ -23,3 +23,7 @@ output/
 
 # Configurations (contains sensitive API keys)
 config/settings.yaml
+
+# Input files
+input/
+

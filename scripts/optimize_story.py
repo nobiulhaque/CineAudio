@@ -43,6 +43,7 @@ def optimize_story(story_path: Path, config: dict, output_path: Path) -> None:
         "Your task is to take a raw story text and convert it into a structured JSON configuration "
         "optimized for text-to-speech narration. You must break the story into paragraphs/scenes "
         "and suggest narration variables for each section.\n\n"
+        "IMPORTANT: Do not discard or skip any credits, copyright disclaimers, title introductions, or introductory/meta text present in the input story. You must include them as the first scene(s) in the JSON structure so they are narrated in the final audio.\n\n"
         "Available voice profiles (all high quality Kokoro TTS voices):\n"
         "- 'am_michael': Standard narration voice, smooth, warm, podcast style. (Use this as default)\n"
         "- 'am_fenrir': Crisp, dry, whispery close-mic voice. Great for creepy whispers, thoughts, or quiet horror scenes.\n"
