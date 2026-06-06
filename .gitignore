@@ -1,0 +1,25 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+
+# OS/IDE files
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+
+# Output files (avoids committing heavy WAV/MP3 audio and logs)
+output/
+*.wav
+*.mp3
+*.log
+
+# Configurations (contains sensitive API keys)
+config/settings.yaml
