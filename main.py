@@ -133,7 +133,7 @@ def run_pipeline(args) -> None:
 
     output_dir = Path(config["paths"]["output_audio"])
     output_dir.mkdir(parents=True, exist_ok=True)
-    master_path = output_dir / "final_narration.wav"
+    master_path = output_dir / f"{story_path.stem}.wav"
 
     log.info("Concatenating audio segments...")
     combined_audio = []
