@@ -2,6 +2,7 @@ import argparse
 import sys
 import io
 import json
+import re
 
 # Force UTF-8 output on Windows to avoid cp1252 UnicodeEncodeError with special chars
 if hasattr(sys.stdout, 'buffer'):
@@ -131,44 +132,54 @@ def run_pipeline(args) -> None:
     # 3. Initialize TTS Engine
     tts_engine = KokoroTTSEngine(config)
 
-    # 4. Generate audio per scene
-    scene_files = []
-    log_banner("Generating Narration")
+    # 4. Generate audio per sentence
+    sentence_files = []
+    log_banner("Generating Narration (Sentence-Level)")
+    
     for idx, scene in enumerate(scenes, start=1):
-        filename = f"scene_{idx:03d}.wav"
         text = scene["text"]
         voice = scene["voice"]
         speed = scene["speed"]
         pause_after = scene["pause_after"]
         
-        try:
-            log.info(f"\n--- Segment {idx}/{len(scenes)} ---")
-            log.info(f"Text preview: \"{text[:60]}...\"")
-            if voice:
-                log.info(f"Voice override: {voice} | Speed override: {speed}")
+        # Split text into sentences
+        sentences_split = re.split(r"(?<=[.!?])\s+", text)
+        sentences_split = [s.strip() for s in sentences_split if s.strip()]
+        
+        log.info(f"\n--- Segment {idx}/{len(scenes)} (split into {len(sentences_split)} sentence(s)) ---")
+        if voice:
+            log.info(f"Voice override: {voice} | Speed override: {speed}")
             
-            # Temporary override of engine speed if defined in scene
-            old_speed = tts_engine.speed
-            if speed is not None:
-                tts_engine.speed = speed
+        old_speed = tts_engine.speed
+        if speed is not None:
+            tts_engine.speed = speed
             
-            # Generate paragraph narration
-            audio_path = tts_engine.generate_narration(text, filename, scene_id=idx, voice=voice)
+        for s_idx, sent_text in enumerate(sentences_split, start=1):
+            filename = f"scene_{idx:03d}_sent_{s_idx:03d}.wav"
+            log.info(f"  Sentence {s_idx}/{len(sentences_split)}: \"{sent_text[:60]}...\"")
             
-            # Restore speed
-            tts_engine.speed = old_speed
-            
-            scene_files.append({
-                "path": audio_path,
-                "pause_after": pause_after
-            })
-        except Exception as e:
-            log.error(f"Failed to generate segment {idx}: {e}")
-            sys.exit(1)
+            try:
+                # Generate sentence narration
+                audio_path = tts_engine.generate_narration(sent_text, filename, scene_id=None, voice=voice)
+                
+                # Determine pause after this sentence
+                is_last = (s_idx == len(sentences_split))
+                sent_pause = pause_after if is_last else 0.4
+                
+                sentence_files.append({
+                    "path": audio_path,
+                    "text": sent_text,
+                    "pause_after": sent_pause
+                })
+            except Exception as e:
+                log.error(f"Failed to generate sentence {s_idx} of segment {idx}: {e}")
+                sys.exit(1)
+                
+        tts_engine.speed = old_speed
 
-    # 5. Concatenate paragraphs into final master file
+    # 5. Concatenate sentences into final master file
     log_banner("Assembling Final Master Narration")
-    if not scene_files:
+    if not sentence_files:
         log.error("No audio files were generated.")
         sys.exit(1)
 
@@ -182,28 +193,16 @@ def run_pipeline(args) -> None:
     current_time = 0.0
     timestamp_lines = []
 
-    for idx, item in enumerate(scene_files, start=1):
+    for idx, item in enumerate(sentence_files, start=1):
         filepath = item["path"]
         pause_after = item["pause_after"]
-        scene_info = scenes[idx-1]
-        
-        # Determine title for timestamp
-        title_to_use = scene_info.get("scene_title")
-        if not title_to_use:
-            words = scene_info["text"].split()
-            if words:
-                snippet = " ".join(words[:5])
-                if len(snippet) > 40:
-                    snippet = snippet[:37] + "..."
-                title_to_use = snippet
-            else:
-                title_to_use = f"Segment {idx}"
+        sent_text = item["text"]
         
         formatted_time = format_timestamp(current_time, fmt_type=ts_format)
         if ts_format == "bracket":
-            timestamp_lines.append(f"{formatted_time} {title_to_use}")
+            timestamp_lines.append(f"{formatted_time} {sent_text}")
         else:
-            timestamp_lines.append(f"{formatted_time} - {title_to_use}")
+            timestamp_lines.append(f"{formatted_time} - {sent_text}")
 
         data, sr = sf.read(str(filepath))
         if sample_rate is None:
@@ -216,17 +215,14 @@ def run_pipeline(args) -> None:
         segment_duration = len(data) / sr
         current_time += segment_duration
         
-        # Add pause after the segment (skip pause for the last segment if it is a clean end)
-        if idx < len(scene_files):
+        if idx < len(sentence_files):
             silence_len = int(sr * pause_after)
             if len(data.shape) > 1:
-                # Stereo/multi-channel
                 silence = np.zeros((silence_len, data.shape[1]), dtype=data.dtype)
             else:
                 silence = np.zeros(silence_len, dtype=data.dtype)
             combined_audio.append(silence)
             current_time += pause_after
-
 
     if combined_audio:
         final_data = np.concatenate(combined_audio)
@@ -252,7 +248,6 @@ def run_pipeline(args) -> None:
             except Exception as e:
                 log.warning(f"Failed to write timestamps file: {e}")
 
-
         # ── Export MP3 (320 kbps — highest quality) ───────────────────────
         mp3_path = master_path.with_suffix(".mp3")
         try:
@@ -261,7 +256,7 @@ def run_pipeline(args) -> None:
                 str(mp3_path),
                 format="mp3",
                 bitrate="320k",
-                parameters=["-q:a", "0"],   # VBR quality 0 = best
+                parameters=["-q:a", "0"],
             )
             log.info(f"[bold green][OK] MP3 saved:[/bold green]  [cyan]{mp3_path}[/cyan]")
         except Exception as e:
@@ -271,7 +266,7 @@ def run_pipeline(args) -> None:
         cleanup_cfg = config.get("cleanup", {})
         if cleanup_cfg.get("delete_temp_files", True):
             log.info("Cleaning up temporary audio segments...")
-            for item in scene_files:
+            for item in sentence_files:
                 try:
                     filepath = item["path"]
                     if filepath.exists():

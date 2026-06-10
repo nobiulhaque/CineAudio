@@ -15,10 +15,22 @@ def main():
     
     python_exe = sys.executable
     stories_dir = Path("input/stories")
-    story_files = sorted(list(stories_dir.glob("story part *.txt")), key=lambda p: int(p.stem.split("part ")[1]))
+    
+    txt_files = list(stories_dir.glob("*.txt"))
+    
+    def sort_key(p):
+        stem = p.stem.lower()
+        if "story part " in stem:
+            try:
+                return (0, int(stem.split("part ")[1]))
+            except (IndexError, ValueError):
+                pass
+        return (1, stem)
+        
+    story_files = sorted(txt_files, key=sort_key)
     
     if not story_files:
-        log.error("No 'story part *.txt' files found in input/stories.")
+        log.error("No story .txt files found in input/stories.")
         sys.exit(1)
         
     log.info(f"Found {len(story_files)} story part(s) to process.")
