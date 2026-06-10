@@ -20,6 +20,23 @@ from src.narration.kokoro_tts_engine import KokoroTTSEngine
 log = get_logger("main")
 
 
+def format_timestamp(seconds, fmt_type="youtube"):
+    seconds = int(round(seconds))
+    h = seconds // 3600
+    m = (seconds % 3600) // 60
+    s = seconds % 60
+    
+    if h > 0:
+        time_str = f"{h:02d}:{m:02d}:{s:02d}"
+    else:
+        time_str = f"{m:02d}:{s:02d}"
+        
+    if fmt_type == "bracket":
+        return f"[{time_str}]"
+    return time_str
+
+
+
 def run_pipeline(args) -> None:
     log_banner("AI Cinematic Story Narrator (Kokoro Edition)")
 
@@ -44,6 +61,13 @@ def run_pipeline(args) -> None:
     log.info(f"Loaded configuration: {args.config}")
     log.info(f"Target Story: {story_path}")
 
+    # Extract timestamp settings
+    ts_cfg = config.get("timestamps", {})
+    ts_enabled = ts_cfg.get("enabled", True)
+    ts_format = ts_cfg.get("format", "youtube")
+    ts_suffix = ts_cfg.get("suffix", "_timestamps.txt")
+
+
     # 2. Read and parse story
     is_json = story_path.suffix.lower() == ".json"
     scenes = []
@@ -62,6 +86,7 @@ def run_pipeline(args) -> None:
                 if not text:
                     continue
                 scenes.append({
+                    "scene_title": scene.get("scene_title"),
                     "text": text,
                     "voice": scene.get("voice"),
                     "speed": scene.get("speed"),
@@ -78,12 +103,28 @@ def run_pipeline(args) -> None:
         # Split by double newline to separate paragraphs
         paragraphs = [p.strip() for p in story_text.split("\n\n") if p.strip()]
         for para in paragraphs:
+            scene_title = None
+            text_to_use = para
+            if para.startswith("#"):
+                parts = para.split("\n", 1)
+                scene_title = parts[0].lstrip("# ").strip()
+                text_to_use = parts[1].strip() if len(parts) > 1 else ""
+            elif para.startswith("---") and "---" in para[3:]:
+                parts = para.split("\n", 1)
+                scene_title = parts[0].strip("- ")
+                text_to_use = parts[1].strip() if len(parts) > 1 else ""
+            
+            if not text_to_use and scene_title:
+                text_to_use = para
+                
             scenes.append({
-                "text": para,
+                "scene_title": scene_title,
+                "text": text_to_use,
                 "voice": None,
                 "speed": None,
                 "pause_after": 0.8
             })
+
 
     log.info(f"Parsed story into {len(scenes)} narration segment(s).")
 
@@ -138,11 +179,32 @@ def run_pipeline(args) -> None:
     log.info("Concatenating audio segments...")
     combined_audio = []
     sample_rate = None
+    current_time = 0.0
+    timestamp_lines = []
 
     for idx, item in enumerate(scene_files, start=1):
         filepath = item["path"]
         pause_after = item["pause_after"]
+        scene_info = scenes[idx-1]
         
+        # Determine title for timestamp
+        title_to_use = scene_info.get("scene_title")
+        if not title_to_use:
+            words = scene_info["text"].split()
+            if words:
+                snippet = " ".join(words[:5])
+                if len(snippet) > 40:
+                    snippet = snippet[:37] + "..."
+                title_to_use = snippet
+            else:
+                title_to_use = f"Segment {idx}"
+        
+        formatted_time = format_timestamp(current_time, fmt_type=ts_format)
+        if ts_format == "bracket":
+            timestamp_lines.append(f"{formatted_time} {title_to_use}")
+        else:
+            timestamp_lines.append(f"{formatted_time} - {title_to_use}")
+
         data, sr = sf.read(str(filepath))
         if sample_rate is None:
             sample_rate = sr
@@ -150,6 +212,9 @@ def run_pipeline(args) -> None:
             log.warning(f"Sample rate mismatch: {sr} != {sample_rate}. Using sample rate {sample_rate}.")
         
         combined_audio.append(data)
+        
+        segment_duration = len(data) / sr
+        current_time += segment_duration
         
         # Add pause after the segment (skip pause for the last segment if it is a clean end)
         if idx < len(scene_files):
@@ -160,6 +225,8 @@ def run_pipeline(args) -> None:
             else:
                 silence = np.zeros(silence_len, dtype=data.dtype)
             combined_audio.append(silence)
+            current_time += pause_after
+
 
     if combined_audio:
         final_data = np.concatenate(combined_audio)
@@ -167,6 +234,24 @@ def run_pipeline(args) -> None:
         # ── Export WAV ────────────────────────────────────────────────────
         sf.write(str(master_path), final_data, sample_rate)
         log.info(f"[bold green][OK] WAV saved:[/bold green] [cyan]{master_path}[/cyan]")
+
+        # ── Export Timestamps ─────────────────────────────────────────────
+        if ts_enabled:
+            ts_path = master_path.parent / f"{story_path.stem}{ts_suffix}"
+            try:
+                with open(ts_path, "w", encoding="utf-8") as ts_file:
+                    ts_file.write(f"# YouTube Timestamps for {story_path.name}\n")
+                    ts_file.write(f"# Total Duration: {format_timestamp(current_time, ts_format)}\n\n")
+                    for line in timestamp_lines:
+                        ts_file.write(f"{line}\n")
+                log.info(f"[bold green][OK] Timestamps saved:[/bold green] [cyan]{ts_path}[/cyan]")
+                log.info("\n--- Generated Timestamps ---")
+                for line in timestamp_lines:
+                    log.info(f"  {line}")
+                log.info("----------------------------\n")
+            except Exception as e:
+                log.warning(f"Failed to write timestamps file: {e}")
+
 
         # ── Export MP3 (320 kbps — highest quality) ───────────────────────
         mp3_path = master_path.with_suffix(".mp3")
