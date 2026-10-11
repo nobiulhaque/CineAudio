@@ -12,11 +12,14 @@ if hasattr(sys.stderr, 'buffer'):
 from pathlib import Path
 import numpy as np
 import soundfile as sf
-from pydub import AudioSegment
+try:
+    from pydub import AudioSegment
+    HAS_PYDUB = True
+except Exception:
+    HAS_PYDUB = False
 
 from src.utils.config_loader import load_config
 from src.utils.logger import get_logger, log_banner
-from src.narration.kokoro_tts_engine import KokoroTTSEngine
 
 log = get_logger("main")
 
@@ -130,7 +133,22 @@ def run_pipeline(args) -> None:
     log.info(f"Parsed story into {len(scenes)} narration segment(s).")
 
     # 3. Initialize TTS Engine
-    tts_engine = KokoroTTSEngine(config)
+    tts_cfg = config.get("tts", {})
+    engine_type = tts_cfg.get("engine", "").lower()
+    default_voice = tts_cfg.get("voice", "")
+    
+    # Check if scene overrides or default voice indicates edge-tts (e.g. 'bn-BD', 'bn-IN', or 'Neural')
+    first_voice = scenes[0].get("voice") if scenes and scenes[0].get("voice") else default_voice
+    is_edge_voice = any(p in (first_voice or "") for p in ["bn-", "Neural", "en-US-", "en-GB-"])
+
+    if engine_type == "edge" or engine_type == "edge-tts" or is_edge_voice:
+        log.info("Using Edge-TTS Engine (High-quality Neural Voice / Bangla support)")
+        from src.narration.edge_tts_engine import EdgeTTSEngine
+        tts_engine = EdgeTTSEngine(config)
+    else:
+        log.info("Using Kokoro TTS Engine")
+        from src.narration.kokoro_tts_engine import KokoroTTSEngine
+        tts_engine = KokoroTTSEngine(config)
 
     # 4. Generate audio per sentence
     sentence_files = []
@@ -250,17 +268,20 @@ def run_pipeline(args) -> None:
 
         # ── Export MP3 (320 kbps — highest quality) ───────────────────────
         mp3_path = master_path.with_suffix(".mp3")
-        try:
-            audio_segment = AudioSegment.from_wav(str(master_path))
-            audio_segment.export(
-                str(mp3_path),
-                format="mp3",
-                bitrate="320k",
-                parameters=["-q:a", "0"],
-            )
-            log.info(f"[bold green][OK] MP3 saved:[/bold green]  [cyan]{mp3_path}[/cyan]")
-        except Exception as e:
-            log.warning(f"MP3 export failed (ffmpeg missing?): {e}")
+        if HAS_PYDUB:
+            try:
+                audio_segment = AudioSegment.from_wav(str(master_path))
+                audio_segment.export(
+                    str(mp3_path),
+                    format="mp3",
+                    bitrate="320k",
+                    parameters=["-q:a", "0"],
+                )
+                log.info(f"[bold green][OK] MP3 saved:[/bold green]  [cyan]{mp3_path}[/cyan]")
+            except Exception as e:
+                log.warning(f"MP3 export failed (ffmpeg missing?): {e}")
+        else:
+            log.info("MP3 export skipped (pydub/audioop not installed for this Python version). WAV is preserved at full lossless quality.")
 
         # ── Optional Cleanup of Temporary Scene Files ─────────────────────
         cleanup_cfg = config.get("cleanup", {})
