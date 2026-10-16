@@ -141,7 +141,15 @@ def run_pipeline(args) -> None:
     first_voice = scenes[0].get("voice") if scenes and scenes[0].get("voice") else default_voice
     is_edge_voice = any(p in (first_voice or "") for p in ["bn-", "Neural", "en-US-", "en-GB-"])
 
-    if engine_type == "edge" or engine_type == "edge-tts" or is_edge_voice:
+    if engine_type in ["chatterbox", "chatterbox-bangla", "boson"]:
+        log.info("Using Chatterbox-Bangla Voice Cloning Engine (BosonLab/chatterbox-bangla)")
+        from src.narration.chatterbox_engine import ChatterboxBanglaEngine
+        tts_engine = ChatterboxBanglaEngine(config)
+    elif engine_type in ["clone", "f5", "f5-tts", "f5tts"]:
+        log.info("Using F5-TTS Voice Cloning Engine (Zero-shot cloning from vocal audio)")
+        from src.narration.f5_tts_engine import F5TTSCloningEngine
+        tts_engine = F5TTSCloningEngine(config)
+    elif engine_type in ["edge", "edge-tts"] or is_edge_voice:
         log.info("Using Edge-TTS Engine (High-quality Neural Voice / Bangla support)")
         from src.narration.edge_tts_engine import EdgeTTSEngine
         tts_engine = EdgeTTSEngine(config)
