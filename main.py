@@ -13,6 +13,12 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 try:
+    import static_ffmpeg
+    static_ffmpeg.add_paths()
+except Exception:
+    pass
+
+try:
     from pydub import AudioSegment
     HAS_PYDUB = True
 except Exception:
