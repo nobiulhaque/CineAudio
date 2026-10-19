@@ -168,17 +168,47 @@ def run_pipeline(args) -> None:
     sentence_files = []
     log_banner("Generating Narration (Sentence-Level)")
     
+    # Parse retry scenes if specified
+    retry_scene_ids = set()
+    if getattr(args, "retry_scenes", None):
+        for part in args.retry_scenes.split(","):
+            part = part.strip()
+            if "-" in part:
+                start_s, end_s = part.split("-", 1)
+                retry_scene_ids.update(range(int(start_s), int(end_s) + 1))
+            elif part.isdigit():
+                retry_scene_ids.add(int(part))
+        log.info(f"Targeting selective regeneration for scene(s): {sorted(list(retry_scene_ids))}")
+
+    # Parse scene range if specified
+    start_scene = getattr(args, "start_scene", 1) or 1
+    end_scene = getattr(args, "end_scene", len(scenes)) or len(scenes)
+
+    # 4. Generate audio per sentence / scene
+    sentence_files = []
+    log_banner("Generating Narration (Short Clip / Scene Caching Mode)")
+    
+    temp_dir = Path(config["paths"]["temp_dir"])
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
     for idx, scene in enumerate(scenes, start=1):
+        if idx < start_scene or idx > end_scene:
+            continue
+
         text = scene["text"]
         voice = scene["voice"]
         speed = scene["speed"]
         pause_after = scene["pause_after"]
         
-        # Split text into sentences
-        sentences_split = re.split(r"(?<=[.!?])\s+", text)
+        # Split text into sentences using Bengali (।), English (.!?), and ellipses (…)
+        sentences_split = re.split(r"(?<=[।!?…\n])\s+", text)
         sentences_split = [s.strip() for s in sentences_split if s.strip()]
         
-        log.info(f"\n--- Segment {idx}/{len(scenes)} (split into {len(sentences_split)} sentence(s)) ---")
+        # Fallback if sentence wasn't split
+        if not sentences_split and text.strip():
+            sentences_split = [text.strip()]
+
+        log.info(f"\n--- Clip / Scene {idx}/{len(scenes)} (split into {len(sentences_split)} sentence(s)) ---")
         if voice:
             log.info(f"Voice override: {voice} | Speed override: {speed}")
             
@@ -188,15 +218,26 @@ def run_pipeline(args) -> None:
             
         for s_idx, sent_text in enumerate(sentences_split, start=1):
             filename = f"scene_{idx:03d}_sent_{s_idx:03d}.wav"
+            out_file = temp_dir / filename
+            is_last = (s_idx == len(sentences_split))
+            sent_pause = pause_after if is_last else 0.4
+            
+            # Caching check: skip if file already exists and not flagged for retry
+            force_retry = (idx in retry_scene_ids) or getattr(args, "force", False)
+            if out_file.exists() and not force_retry:
+                log.info(f"  Sentence {s_idx}/{len(sentences_split)}: [green]Cached[/green] -> {filename}")
+                sentence_files.append({
+                    "path": out_file,
+                    "text": sent_text,
+                    "pause_after": sent_pause
+                })
+                continue
+
             log.info(f"  Sentence {s_idx}/{len(sentences_split)}: \"{sent_text[:60]}...\"")
             
             try:
                 # Generate sentence narration
                 audio_path = tts_engine.generate_narration(sent_text, filename, scene_id=None, voice=voice)
-                
-                # Determine pause after this sentence
-                is_last = (s_idx == len(sentences_split))
-                sent_pause = pause_after if is_last else 0.4
                 
                 sentence_files.append({
                     "path": audio_path,
@@ -316,9 +357,13 @@ def run_pipeline(args) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="AI Cinematic Story Narrator (Kokoro)")
+    parser = argparse.ArgumentParser(description="AI Cinematic Story Narrator")
     parser.add_argument("--story", type=str, help="Path to story text or JSON file")
     parser.add_argument("--config", type=str, default="config/settings.yaml", help="Path to settings.yaml")
+    parser.add_argument("--retry-scenes", type=str, help="Comma-separated or range list of scene numbers to regenerate (e.g. '4' or '4,7,12' or '3-6')")
+    parser.add_argument("--start-scene", type=int, default=None, help="Generate starting from this scene number")
+    parser.add_argument("--end-scene", type=int, default=None, help="Stop generating at this scene number")
+    parser.add_argument("--force", action="store_true", help="Force regenerate all clips ignoring cache")
     args = parser.parse_args()
     
     run_pipeline(args)

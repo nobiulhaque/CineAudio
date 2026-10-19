@@ -68,15 +68,17 @@ class ChatterboxBanglaEngine:
             ref_file = str(voice)
 
         # Generate audio using reference voice prompt
-        # Lower exaggeration and temperature reduces theatrical West Bengal intonation
-        # Higher repetition_penalty prevents trailing consonant artifacts (like trailing "ত")
+        # Lower exaggeration and temperature yields grounded, natural Bangladeshi narration tone
+        # repetition_penalty prevents looping/hallucinating phonemes and trailing consonant noise
         wav = self.model.generate(
             text,
             audio_prompt_path=ref_file,
-            exaggeration=0.35,
-            repetition_penalty=1.3,
-            temperature=0.6,
-            cfg_weight=0.6
+            exaggeration=0.25,
+            repetition_penalty=1.35,
+            temperature=0.35,
+            cfg_weight=0.6,
+            min_p=0.05,
+            top_p=0.88
         )
         
         # Ensure 2D tensor [channels, samples] for torchaudio save
