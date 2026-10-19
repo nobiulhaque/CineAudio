@@ -136,7 +136,51 @@ def run_pipeline(args) -> None:
             })
 
 
-    log.info(f"Parsed story into {len(scenes)} narration segment(s).")
+    log.info(f"Loaded {len(scenes)} raw segments.")
+
+    # Smart Flow Aggregation: Group tiny fragments into natural 5-8 second spoken blocks
+    # Prevents 1-2 second robotic stops and provides natural breathing room
+    grouped_scenes = []
+    current_group = []
+    current_word_count = 0
+    min_words_per_clip = 14  # roughly 5-7 seconds of natural speech in Bengali
+    max_words_per_clip = 32  # roughly 10-12 seconds
+
+    for sc in scenes:
+        words = sc["text"].split()
+        sc_len = len(words)
+        
+        # If adding this scene exceeds max_words and we already have a healthy block, flush
+        if current_group and (current_word_count + sc_len > max_words_per_clip or (current_word_count >= min_words_per_clip and sc.get("pause_after", 0.8) >= 1.0)):
+            merged_text = " ".join([s["text"] for s in current_group])
+            last_pause = current_group[-1].get("pause_after", 0.7)
+            # Ensure dramatic pause between narrative blocks is smooth (0.6 - 0.8s)
+            chosen_pause = max(0.5, min(last_pause, 1.0))
+            grouped_scenes.append({
+                "scene_title": current_group[0].get("scene_title"),
+                "text": merged_text,
+                "voice": current_group[0].get("voice"),
+                "speed": current_group[0].get("speed"),
+                "pause_after": chosen_pause
+            })
+            current_group = []
+            current_word_count = 0
+
+        current_group.append(sc)
+        current_word_count += sc_len
+
+    if current_group:
+        merged_text = " ".join([s["text"] for s in current_group])
+        grouped_scenes.append({
+            "scene_title": current_group[0].get("scene_title"),
+            "text": merged_text,
+            "voice": current_group[0].get("voice"),
+            "speed": current_group[0].get("speed"),
+            "pause_after": current_group[-1].get("pause_after", 0.8)
+        })
+
+    scenes = grouped_scenes
+    log.info(f"Aggregated story into {len(scenes)} natural narrative clip(s) (5-8s average breathing room).")
 
     # 3. Initialize TTS Engine
     tts_cfg = config.get("tts", {})
@@ -200,54 +244,40 @@ def run_pipeline(args) -> None:
         speed = scene["speed"]
         pause_after = scene["pause_after"]
         
-        # Split text into sentences using Bengali (।), English (.!?), and ellipses (…)
-        sentences_split = re.split(r"(?<=[।!?…\n])\s+", text)
-        sentences_split = [s.strip() for s in sentences_split if s.strip()]
-        
-        # Fallback if sentence wasn't split
-        if not sentences_split and text.strip():
-            sentences_split = [text.strip()]
+        filename = f"clip_{idx:03d}.wav"
+        out_file = temp_dir / filename
+        force_retry = (idx in retry_scene_ids) or getattr(args, "force", False)
 
-        log.info(f"\n--- Clip / Scene {idx}/{len(scenes)} (split into {len(sentences_split)} sentence(s)) ---")
+        log.info(f"\n--- Clip {idx}/{len(scenes)} ({len(text.split())} words) ---")
+        log.info(f"  Text: \"{text[:70]}...\"")
         if voice:
             log.info(f"Voice override: {voice} | Speed override: {speed}")
             
         old_speed = tts_engine.speed
         if speed is not None:
             tts_engine.speed = speed
-            
-        for s_idx, sent_text in enumerate(sentences_split, start=1):
-            filename = f"scene_{idx:03d}_sent_{s_idx:03d}.wav"
-            out_file = temp_dir / filename
-            is_last = (s_idx == len(sentences_split))
-            sent_pause = pause_after if is_last else 0.4
-            
-            # Caching check: skip if file already exists and not flagged for retry
-            force_retry = (idx in retry_scene_ids) or getattr(args, "force", False)
-            if out_file.exists() and not force_retry:
-                log.info(f"  Sentence {s_idx}/{len(sentences_split)}: [green]Cached[/green] -> {filename}")
-                sentence_files.append({
-                    "path": out_file,
-                    "text": sent_text,
-                    "pause_after": sent_pause
-                })
-                continue
 
-            log.info(f"  Sentence {s_idx}/{len(sentences_split)}: \"{sent_text[:60]}...\"")
-            
-            try:
-                # Generate sentence narration
-                audio_path = tts_engine.generate_narration(sent_text, filename, scene_id=None, voice=voice)
-                
-                sentence_files.append({
-                    "path": audio_path,
-                    "text": sent_text,
-                    "pause_after": sent_pause
-                })
-            except Exception as e:
-                log.error(f"Failed to generate sentence {s_idx} of segment {idx}: {e}")
-                sys.exit(1)
-                
+        if out_file.exists() and not force_retry:
+            log.info(f"  [green]Cached[/green] -> {filename}")
+            sentence_files.append({
+                "path": out_file,
+                "text": text,
+                "pause_after": pause_after
+            })
+            tts_engine.speed = old_speed
+            continue
+
+        try:
+            audio_path = tts_engine.generate_narration(text, filename, scene_id=None, voice=voice)
+            sentence_files.append({
+                "path": audio_path,
+                "text": text,
+                "pause_after": pause_after
+            })
+        except Exception as e:
+            log.error(f"Failed to generate clip {idx}: {e}")
+            sys.exit(1)
+
         tts_engine.speed = old_speed
 
     # 5. Concatenate sentences into final master file

@@ -262,10 +262,18 @@ class ChatterboxTTS:
             # Extract only the conditional batch.
             speech_tokens = speech_tokens[0]
 
-            # TODO: output becomes 1D
             speech_tokens = drop_invalid_tokens(speech_tokens)
             
             speech_tokens = speech_tokens[speech_tokens < 6561]
+
+            # S3Gen / HiFTGenerator requires at least 4 tokens for its temporal convolution kernels
+            if len(speech_tokens) < 4:
+                pad_needed = 4 - len(speech_tokens)
+                if len(speech_tokens) == 0:
+                    speech_tokens = torch.tensor([100, 100, 100, 100], dtype=torch.long, device=self.device)
+                else:
+                    last_token = speech_tokens[-1:]
+                    speech_tokens = torch.cat([speech_tokens, last_token.repeat(pad_needed)])
 
             speech_tokens = speech_tokens.to(self.device)
 
